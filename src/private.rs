@@ -1,6 +1,5 @@
-use crate::adapters::{Adapter, AdapterNew};
 use crate::public::Public;
-use crate::DateTime;
+use crate::{CBError, DateTime};
 
 use bigdecimal::BigDecimal;
 use hmac::{Hmac, Mac};
@@ -10,17 +9,14 @@ use sha2::Sha256;
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
-pub struct Private<Adapter> {
-    _pub: Public<Adapter>,
+pub struct Private {
+    _pub: Public,
     key: String,
     secret: String,
 }
 
-impl<A> Private<A> {
-    pub fn new(uri: &str, key: &str, secret: &str) -> Self
-    where
-        A: AdapterNew,
-    {
+impl Private {
+    pub fn new(uri: &str, key: &str, secret: &str) -> Self {
         Self {
             _pub: Public::new(uri),
             key: key.to_string(),
@@ -35,11 +31,8 @@ impl<A> Private<A> {
     ///
     /// https://developers.coinbase.com/api/v2#list-accounts
     ///
-    pub fn accounts(&self) -> A::Result
-    where
-        A: Adapter<Vec<Account>> + 'static,
-    {
-        self.call_get("/accounts")
+    pub async fn accounts(&self) -> Result<Vec<Account>, CBError> {
+        self.call_get("/accounts").await
     }
 
     ///
@@ -49,30 +42,25 @@ impl<A> Private<A> {
     ///
     /// https://developers.coinbase.com/api/v2#list-transactions
     ///
-    pub fn transactions(&self, account_id: &Uuid) -> A::Result
-    where
-        A: Adapter<Vec<Transaction>> + 'static,
-    {
+    pub async fn transactions(&self, account_id: &Uuid) -> Result<Vec<Transaction>, CBError> {
         self.call_get(&format!("/accounts/{}/transactions", account_id))
+            .await
     }
 
-    fn call_get<U>(&self, uri: &str) -> A::Result
+    async fn call_get<U>(&self, uri: &str) -> Result<U, CBError>
     where
-        A: Adapter<U> + 'static,
-        U: Send + 'static,
         for<'de> U: serde::Deserialize<'de>,
     {
-        self.call(Method::GET, uri, "")
+        self.call_future(Method::GET, uri, "").await
     }
 
-    fn call<U>(&self, method: Method, uri: &str, body_str: &str) -> A::Result
+    async fn call_future<U>(&self, method: Method, uri: &str, body_str: &str) -> Result<U, CBError>
     where
-        A: Adapter<U> + 'static,
-        U: Send + 'static,
         for<'de> U: serde::Deserialize<'de>,
     {
         self._pub
-            .call(self.request(method, uri, body_str.to_string()))
+            .call_future(self.request(method, uri, body_str.to_string()))
+            .await
     }
 
     fn request(&self, method: Method, _uri: &str, body_str: String) -> Request<Body> {
@@ -83,9 +71,7 @@ impl<A> Private<A> {
 
         let uri: Uri = (self._pub.uri.to_string() + _uri).parse().unwrap();
 
-        let mut req = Request::builder();
-        req.method(&method);
-        req.uri(&uri);
+        let req = Request::builder().method(&method).uri(&uri);
 
         let sign = Self::sign(
             &self.secret,
@@ -95,18 +81,17 @@ impl<A> Private<A> {
             &body_str,
         );
 
-        req.header("User-Agent", Public::<A>::USER_AGENT);
-        req.header("Content-Type", "Application/JSON");
-
-        req.header("CB-VERSION", HeaderValue::from_str("2019-04-03").unwrap());
-        req.header("CB-ACCESS-KEY", HeaderValue::from_str(&self.key).unwrap());
-        req.header("CB-ACCESS-SIGN", HeaderValue::from_str(&sign).unwrap());
-        req.header(
-            "CB-ACCESS-TIMESTAMP",
-            HeaderValue::from_str(&timestamp.to_string()).unwrap(),
-        );
-
-        req.body(body_str.into()).unwrap()
+        req.header("User-Agent", Public::USER_AGENT)
+            .header("Content-Type", "Application/JSON")
+            .header("CB-VERSION", HeaderValue::from_str("2019-04-03").unwrap())
+            .header("CB-ACCESS-KEY", HeaderValue::from_str(&self.key).unwrap())
+            .header("CB-ACCESS-SIGN", HeaderValue::from_str(&sign).unwrap())
+            .header(
+                "CB-ACCESS-TIMESTAMP",
+                HeaderValue::from_str(&timestamp.to_string()).unwrap(),
+            )
+            .body(body_str.into())
+            .unwrap()
     }
 
     pub fn sign(

@@ -1,97 +1,63 @@
 use super::error::CBError;
-use crate::adapters::{Adapter, AdapterNew};
 use crate::DateTime;
+use bigdecimal::BigDecimal;
+use hyper::client::{Client, HttpConnector};
+use hyper::{Body, Request, Uri};
+use hyper_tls::HttpsConnector;
 use std::collections::HashMap;
 
-use bigdecimal::BigDecimal;
-use hyper::client::HttpConnector;
-use hyper::rt::{Future, Stream};
-use hyper::{Body, Client, Request, Uri};
-use hyper_tls::HttpsConnector;
-
-pub struct Public<Adapter> {
+pub struct Public {
     pub(crate) uri: String,
-    pub(crate) adapter: Adapter,
     client: Client<HttpsConnector<HttpConnector>>,
 }
 
-impl<A> Public<A> {
+impl Public {
     pub(crate) const USER_AGENT: &'static str = concat!("coinbase-rs/", env!("CARGO_PKG_VERSION"));
 
-    pub fn new_with_keep_alive(uri: &str, keep_alive: bool) -> Self
-    where
-        A: AdapterNew,
-    {
-        let https = HttpsConnector::new(4).unwrap();
-        let client = Client::builder()
-            .keep_alive(keep_alive)
-            .build::<_, Body>(https);
+    pub fn new(uri: &str) -> Self {
+        let https = HttpsConnector::new();
+        let client = Client::builder().build::<_, Body>(https);
         let uri = uri.to_string();
 
-        Self {
-            uri,
-            client,
-            adapter: A::new().expect("Failed to initialize adapter"),
-        }
+        Self { uri, client }
     }
 
-    pub fn new(uri: &str) -> Self
-    where
-        A: AdapterNew,
-    {
-        Self::new_with_keep_alive(uri, true)
-    }
-
-    pub(crate) fn call_future<U>(
-        &self,
-        request: Request<Body>,
-    ) -> impl Future<Item = U, Error = CBError>
+    pub(crate) async fn call_future<U>(&self, request: Request<Body>) -> Result<U, CBError>
     where
         for<'de> U: serde::Deserialize<'de>,
     {
-        self.client
-            .request(request)
-            .map_err(CBError::Http)
-            .and_then(|res| res.into_body().concat2().map_err(CBError::Http))
-            .and_then(|body| {
-                let res: serde_json::Value = serde_json::from_slice(&body).map_err(|e| {
-                    serde_json::from_slice(&body)
-                        .map(CBError::Coinbase)
-                        .unwrap_or_else(|_| {
-                            let data = String::from_utf8(body.to_vec()).unwrap();
-                            CBError::Serde { error: e, data }
-                        })
-                })?;
-                let data = serde_json::from_slice(res["data"].to_string().as_bytes())
-                    .expect("parsing Response.data");
-                Ok(data)
-            })
+        let response = self.client.request(request).await.map_err(CBError::Http)?;
+        let bytes = hyper::body::to_bytes(response.into_body())
+            .await
+            .map_err(CBError::Http)?;
+        let res: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| {
+            serde_json::from_slice(&bytes)
+                .map(CBError::Coinbase)
+                .unwrap_or_else(|_| {
+                    let data = String::from_utf8(bytes.to_vec()).unwrap();
+                    CBError::Serde { error: e, data }
+                })
+        })?;
+        let data = serde_json::from_slice(res["data"].to_string().as_bytes())
+            .expect("parsing Response.data");
+        Ok(data)
     }
 
-    pub(crate) fn call<U>(&self, request: Request<Body>) -> A::Result
+    async fn get_pub<U>(&self, uri: &str) -> Result<U, CBError>
     where
-        A: Adapter<U> + 'static,
         U: Send + 'static,
         for<'de> U: serde::Deserialize<'de>,
     {
-        self.adapter.process(self.call_future(request))
-    }
-
-    fn get_pub<U>(&self, uri: &str) -> A::Result
-    where
-        A: Adapter<U> + 'static,
-        U: Send + 'static,
-        for<'de> U: serde::Deserialize<'de>,
-    {
-        self.call(self.request(uri))
+        self.call_future(self.request(uri)).await
     }
 
     fn request(&self, uri: &str) -> Request<Body> {
         let uri: Uri = (self.uri.to_string() + uri).parse().unwrap();
 
-        let mut req = Request::get(uri);
-        req.header("User-Agent", Self::USER_AGENT);
-        req.body(Body::empty()).unwrap()
+        Request::get(uri)
+            .header("User-Agent", Self::USER_AGENT)
+            .body(Body::empty())
+            .unwrap()
     }
 
     ///
@@ -103,11 +69,8 @@ impl<A> Public<A> {
     ///
     /// https://developers.coinbase.com/api/v2#currencies
     ///
-    pub fn currencies(&self) -> A::Result
-    where
-        A: Adapter<Vec<Currency>> + 'static,
-    {
-        self.get_pub("/currencies")
+    pub async fn currencies(&self) -> Result<Vec<Currency>, CBError> {
+        self.get_pub("/currencies").await
     }
 
     ///
@@ -119,11 +82,8 @@ impl<A> Public<A> {
     ///
     /// https://developers.coinbase.com/api/v2#exchange-rates
     ///
-    pub fn exchange_rates(&self) -> A::Result
-    where
-        A: Adapter<ExchangeRates> + 'static,
-    {
-        self.get_pub("/exchange-rates")
+    pub async fn exchange_rates(&self) -> Result<ExchangeRates, CBError> {
+        self.get_pub("/exchange-rates").await
     }
 
     ///
@@ -133,11 +93,9 @@ impl<A> Public<A> {
     ///
     /// https://developers.coinbase.com/api/v2#get-buy-price
     ///
-    pub fn buy_price(&self, currency_pair: &str) -> A::Result
-    where
-        A: Adapter<CurrencyPrice> + 'static,
-    {
+    pub async fn buy_price(&self, currency_pair: &str) -> Result<CurrencyPrice, CBError> {
         self.get_pub(&format!("/currency_pair/{}/buy", currency_pair))
+            .await
     }
 
     ///
@@ -147,11 +105,9 @@ impl<A> Public<A> {
     ///
     /// https://developers.coinbase.com/api/v2#get-sell-price
     ///
-    pub fn sell_price(&self, currency_pair: &str) -> A::Result
-    where
-        A: Adapter<CurrencyPrice> + 'static,
-    {
+    pub async fn sell_price(&self, currency_pair: &str) -> Result<CurrencyPrice, CBError> {
         self.get_pub(&format!("/currency_pair/{}/sell", currency_pair))
+            .await
     }
 
     ///
@@ -162,11 +118,13 @@ impl<A> Public<A> {
     ///
     /// https://developers.coinbase.com/api/v2#get-spot-price
     ///
-    pub fn spot_price(&self, currency_pair: &str, _date: Option<chrono::NaiveDate>) -> A::Result
-    where
-        A: Adapter<CurrencyPrice> + 'static,
-    {
+    pub async fn spot_price(
+        &self,
+        currency_pair: &str,
+        _date: Option<chrono::NaiveDate>,
+    ) -> Result<CurrencyPrice, CBError> {
         self.get_pub(&format!("/currency_pair/{}/spot", currency_pair))
+            .await
     }
 
     ///
@@ -176,11 +134,8 @@ impl<A> Public<A> {
     ///
     /// https://developers.coinbase.com/api/v2#time
     ///
-    pub fn current_time(&self) -> A::Result
-    where
-        A: Adapter<DateTime> + 'static,
-    {
-        self.get_pub("/current_time")
+    pub async fn current_time(&self) -> Result<DateTime, CBError> {
+        self.get_pub("/current_time").await
         //.map(|c: Adapter<Result = Result<T, CBError>>| c.iso)
     }
 }
@@ -302,7 +257,10 @@ mod test {
     "currency": "USD"
     }"#;
         let currency_price: CurrencyPrice = serde_json::from_slice(input.as_bytes()).unwrap();
-        assert_eq!(currency_price.amount, BigDecimal::from_f32(1010.25).unwrap());
+        assert_eq!(
+            currency_price.amount,
+            BigDecimal::from_f32(1010.25).unwrap()
+        );
         assert_eq!(currency_price.currency, "USD");
     }
 

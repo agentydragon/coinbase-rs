@@ -11,12 +11,10 @@ extern crate serde_json;
 extern crate sha2;
 extern crate tokio;
 
-pub mod adapters;
 pub mod error;
 pub mod private;
 pub mod public;
 
-pub use adapters::Sync;
 pub use error::CBError;
 pub use private::Private;
 pub use public::Public;
