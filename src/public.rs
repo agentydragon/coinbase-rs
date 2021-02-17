@@ -104,7 +104,8 @@ impl Public {
     /// https://developers.coinbase.com/api/v2#get-buy-price
     ///
     pub async fn buy_price(&self, currency_pair: &str) -> Result<CurrencyPrice, CBError> {
-        self.get_pub(&format!("/price/{}/buy", currency_pair)).await
+        self.get_pub(&format!("/prices/{}/buy", currency_pair))
+            .await
     }
 
     ///
@@ -115,7 +116,7 @@ impl Public {
     /// https://developers.coinbase.com/api/v2#get-sell-price
     ///
     pub async fn sell_price(&self, currency_pair: &str) -> Result<CurrencyPrice, CBError> {
-        self.get_pub(&format!("/price/{}/sell", currency_pair))
+        self.get_pub(&format!("/prices/{}/sell", currency_pair))
             .await
     }
 
