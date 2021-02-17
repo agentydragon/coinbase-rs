@@ -38,8 +38,10 @@ impl Public {
                     CBError::Serde { error: e, data }
                 })
         })?;
-        let data = serde_json::from_slice(res["data"].to_string().as_bytes())
-            .expect("parsing Response.data");
+        let data = serde_json::from_slice(res["data"].to_string().as_bytes()).map_err(|e| {
+            let data = String::from_utf8(bytes.to_vec()).unwrap();
+            CBError::Serde { error: e, data }
+        })?;
         Ok(data)
     }
 
