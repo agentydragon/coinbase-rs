@@ -86,6 +86,11 @@ impl Public {
         self.get_pub("/exchange-rates").await
     }
 
+    pub async fn exchange_rates(&self, base_currency: &str) -> Result<ExchangeRates, CBError> {
+        self.get_pub(format!("/exchange-rates?currency=", base_currency))
+            .await
+    }
+
     ///
     /// **Get buy price**
     ///
